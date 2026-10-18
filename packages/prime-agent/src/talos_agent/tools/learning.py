@@ -9,6 +9,7 @@ from rich.console import Console
 
 from talos_agent.agent.loop import get_openai_client
 from talos_agent.tools.registry import tool
+from talos_agent.tools.learning_parse import parse_performance_review
 
 if TYPE_CHECKING:
     from talos_agent.config import Settings
@@ -135,34 +136,38 @@ async def run_performance_review() -> dict:
     except (json.JSONDecodeError, IndexError):
         return {"status": "analysis_failed", "error": "LLM response was not valid JSON"}
 
+    # ── VALIDATION: Parse and sanitize LLM output before saving ─────────
+    parsed = parse_performance_review(analysis)
+
     # Save learnings to DB
     saved_learnings = []
-    for learning in analysis.get("learnings", []):
+    for learning in parsed["learnings"]:
         lid = _db.save_learning(
-            category=learning.get("category", "general"),
-            insight=learning.get("insight", ""),
-            evidence=learning.get("evidence", ""),
-            confidence=learning.get("confidence", 0.5),
+            category=learning["category"],
+            insight=learning["insight"],
+            evidence=learning["evidence"],
+            confidence=learning["confidence"],
             expires_days=30,
         )
         saved_learnings.append({"id": lid, **learning})
 
     # Save audience insights
-    for seg in analysis.get("audience_segments", []):
+    for seg in parsed["audience_segments"]:
         _db.upsert_audience_insight(
-            segment=seg.get("segment", "unknown"),
-            description=seg.get("description", ""),
-            engagement_score=seg.get("engagement_score", 0.0),
-            keywords=seg.get("keywords"),
+            segment=seg["segment"],
+            description=seg["description"],
+            engagement_score=seg["engagement_score"],
+            keywords=seg["keywords"],
         )
 
     return {
         "status": "review_complete",
         "learnings_saved": len(saved_learnings),
         "learnings": saved_learnings,
-        "audience_segments": analysis.get("audience_segments", []),
+        "audience_segments": parsed["audience_segments"],
         "recommended_actions": analysis.get("recommended_actions", []),
         "weekly_summary": summary,
+        "dropped": parsed["dropped"],  # Added dropped count
     }
 
 
@@ -293,4 +298,3 @@ async def evict_expired_learnings() -> dict:
         "evicted": result["evicted"],
         "ids": result["ids"],
     }
-
